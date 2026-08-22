@@ -1,5 +1,7 @@
 import { and, count, desc, eq, gt, like, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
+import type { Pool } from "mysql2/promise";
 import {
   InsertInventoryItem,
   InsertUser,
@@ -12,18 +14,41 @@ import {
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
+const DB_POOL_SIZE = parseInt(process.env.DB_POOL_SIZE || "10");
+
+let _pool: Pool | null = null;
 let _db: ReturnType<typeof drizzle> | null = null;
 
-export async function getDb() {
+async function createPool(): Promise<Pool> {
+  if (_pool) return _pool;
+  _pool = mysql.createPool({
+    uri: process.env.DATABASE_URL,
+    connectionLimit: DB_POOL_SIZE,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+  });
+  return _pool;
+}
+
+export async function getDb(): Promise<ReturnType<typeof drizzle> | null> {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const pool = await createPool();
+      _db = drizzle(pool) as unknown as ReturnType<typeof drizzle>;
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
     }
   }
   return _db;
+}
+
+export async function closeDb() {
+  if (_pool) {
+    await _pool.end();
+    _pool = null;
+    _db = null;
+  }
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
@@ -57,6 +82,8 @@ export async function listInventory(filters: {
   condition?: (typeof inventoryItems.condition.enumValues)[number];
   game?: string;
   lowStockOnly?: boolean;
+  page?: number;
+  pageSize?: number;
 }) {
   const db = await getDb();
   if (!db) return [];
@@ -69,7 +96,13 @@ export async function listInventory(filters: {
     const term = `%${filters.query.trim()}%`;
     clauses.push(or(like(inventoryItems.cardName, term), like(inventoryItems.sku, term), like(inventoryItems.setName, term), like(inventoryItems.game, term)));
   }
-  return db.select().from(inventoryItems).where(and(...clauses)).orderBy(desc(inventoryItems.updatedAt), desc(inventoryItems.id));
+  const offset = ((filters.page ?? 1) - 1) * (filters.pageSize ?? 50);
+  return db.select()
+    .from(inventoryItems)
+    .where(and(...clauses))
+    .orderBy(desc(inventoryItems.updatedAt), desc(inventoryItems.id))
+    .limit(filters.pageSize ?? 50)
+    .offset(offset);
 }
 
 export async function getInventoryItem(itemId: number) {
@@ -166,7 +199,7 @@ export async function getInventoryDashboard() {
   };
 }
 
-export async function listStockMovements(itemId?: number) {
+export async function listStockMovements(itemId?: number, page?: number, pageSize?: number) {
   const db = await getDb();
   if (!db) return [];
   const base = db
@@ -187,7 +220,12 @@ export async function listStockMovements(itemId?: number) {
     .from(stockMovements)
     .leftJoin(inventoryItems, eq(stockMovements.inventoryItemId, inventoryItems.id))
     .leftJoin(users, eq(stockMovements.createdById, users.id));
-  return itemId
-    ? base.where(eq(stockMovements.inventoryItemId, itemId)).orderBy(desc(stockMovements.createdAt), desc(stockMovements.id))
-    : base.orderBy(desc(stockMovements.createdAt), desc(stockMovements.id)).limit(100);
+  const query = itemId
+    ? base.where(eq(stockMovements.inventoryItemId, itemId))
+    : base;
+  const offset = ((page ?? 1) - 1) * (pageSize ?? 100);
+  return query
+    .orderBy(desc(stockMovements.createdAt), desc(stockMovements.id))
+    .limit(pageSize ?? 100)
+    .offset(offset);
 }

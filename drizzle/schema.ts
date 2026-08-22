@@ -56,6 +56,9 @@ export const inventoryItems = mysqlTable(
     index("inventory_items_game_idx").on(table.game),
     index("inventory_items_stock_idx").on(table.onHand, table.reorderThreshold),
     index("inventory_items_type_idx").on(table.productType),
+    index("inventory_items_search_idx").on(table.game, table.setName, table.cardName, table.sku),
+    index("inventory_items_low_stock_idx").on(table.onHand, table.reorderThreshold),
+    index("inventory_items_created_idx").on(table.createdAt),
   ],
 );
 
@@ -74,10 +77,14 @@ export const stockMovements = mysqlTable(
     createdById: int("createdById").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => [index("stock_movements_item_created_idx").on(table.inventoryItemId, table.createdAt), index("stock_movements_actor_created_idx").on(table.createdById, table.createdAt)],
+  table => [
+    index("stock_movements_item_created_idx").on(table.inventoryItemId, table.createdAt),
+    index("stock_movements_actor_created_idx").on(table.createdById, table.createdAt),
+    index("stock_movements_type_idx").on(table.movementType, table.createdAt),
+  ],
 );
 
-/** A location-level balance makes an item’s on-hand total explainable across cases, backstock, and events. */
+/** A location-level balance makes an item's on-hand total explainable across cases, backstock, and events. */
 export const inventoryLocations = mysqlTable(
   "inventory_locations",
   {
@@ -93,6 +100,7 @@ export const inventoryLocations = mysqlTable(
   table => [
     uniqueIndex("inventory_locations_item_name_unique").on(table.inventoryItemId, table.name),
     index("inventory_locations_item_idx").on(table.inventoryItemId, table.onHand),
+    index("inventory_locations_item_created_idx").on(table.inventoryItemId, table.createdAt),
   ],
 );
 
@@ -117,6 +125,7 @@ export const locationStockMovements = mysqlTable(
     index("location_movements_location_created_idx").on(table.inventoryLocationId, table.createdAt),
     index("location_movements_item_created_idx").on(table.inventoryItemId, table.createdAt),
     index("location_movements_transfer_idx").on(table.transferGroupId),
+    index("location_movements_type_idx").on(table.movementType, table.createdAt),
   ],
 );
 
@@ -133,7 +142,10 @@ export const stockAlertEvents = mysqlTable(
     createdById: int("createdById").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => [index("stock_alert_events_item_created_idx").on(table.inventoryItemId, table.createdAt)],
+  table => [
+    index("stock_alert_events_item_created_idx").on(table.inventoryItemId, table.createdAt),
+    index("stock_alert_events_type_idx").on(table.eventType, table.createdAt),
+  ],
 );
 
 /** Image metadata points to managed S3 storage; binary image data never enters the database. */
@@ -149,7 +161,10 @@ export const inventoryImages = mysqlTable(
     createdById: int("createdById").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => [index("inventory_images_item_idx").on(table.inventoryItemId, table.createdAt)],
+  table => [
+    index("inventory_images_item_idx").on(table.inventoryItemId, table.createdAt),
+    index("inventory_images_item_created_idx").on(table.inventoryItemId, table.createdAt),
+  ],
 );
 
 export type User = typeof users.$inferSelect;
