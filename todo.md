@@ -12,3 +12,7 @@
 - [x] Synchronize the completed implementation to the requested GitHub repository.
 - [x] Add tRPC mutation coverage for adjustment success, stale-version conflict, and immutable ledger insertion.
 - [x] Synchronize the implementation source into the requested `card-shop-inventory-management-` repository and push the completed commit.
+- [x] Model and persist per-location on-hand balances for each inventory record.
+- [x] Add concurrent-safe location-to-location transfer mutations that create auditable linked movements.
+- [x] Make per-location stock, reorder risk, low-stock alert status, and alert history visible in inventory and dashboard views.
+- [ ] Push the tested multi-location enhancement to the requested repository.

@@ -22,25 +22,11 @@ export const users = mysqlTable("users", {
 });
 
 export const inventoryProductTypes = ["single", "sealed"] as const;
-export const inventoryConditions = [
-  "near_mint",
-  "lightly_played",
-  "moderately_played",
-  "heavily_played",
-  "damaged",
-  "sealed",
-] as const;
-export const stockMovementTypes = [
-  "opening_balance",
-  "receive",
-  "sale",
-  "return",
-  "adjustment",
-  "correction",
-  "transfer",
-] as const;
+export const inventoryConditions = ["near_mint", "lightly_played", "moderately_played", "heavily_played", "damaged", "sealed"] as const;
+export const stockMovementTypes = ["opening_balance", "receive", "sale", "return", "adjustment", "correction", "transfer"] as const;
+export const stockAlertEventTypes = ["low_stock", "recovered"] as const;
 
-/** Shared stock master record for single cards and sealed product. Quantity changes only flow through stockMovements. */
+/** Shared stock master record. onHand is the atomically maintained sum of its location balances. */
 export const inventoryItems = mysqlTable(
   "inventory_items",
   {
@@ -73,7 +59,7 @@ export const inventoryItems = mysqlTable(
   ],
 );
 
-/** Immutable accounting ledger. There is intentionally no updatedAt field. */
+/** Immutable item-level audit ledger. There is intentionally no updatedAt field. */
 export const stockMovements = mysqlTable(
   "stock_movements",
   {
@@ -88,13 +74,69 @@ export const stockMovements = mysqlTable(
     createdById: int("createdById").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
+  table => [index("stock_movements_item_created_idx").on(table.inventoryItemId, table.createdAt), index("stock_movements_actor_created_idx").on(table.createdById, table.createdAt)],
+);
+
+/** A location-level balance makes an item’s on-hand total explainable across cases, backstock, and events. */
+export const inventoryLocations = mysqlTable(
+  "inventory_locations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    inventoryItemId: int("inventoryItemId").notNull(),
+    name: varchar("name", { length: 160 }).notNull(),
+    onHand: int("onHand").notNull().default(0),
+    version: int("version").notNull().default(0),
+    isPrimary: int("isPrimary").notNull().default(0),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
   table => [
-    index("stock_movements_item_created_idx").on(table.inventoryItemId, table.createdAt),
-    index("stock_movements_actor_created_idx").on(table.createdById, table.createdAt),
+    uniqueIndex("inventory_locations_item_name_unique").on(table.inventoryItemId, table.name),
+    index("inventory_locations_item_idx").on(table.inventoryItemId, table.onHand),
   ],
 );
 
-/** Image records retain the managed-storage key plus rendering URL; binary image data never enters the database. */
+/** Append-only location ledger preserving exact case, backstock, or event-floor balances. */
+export const locationStockMovements = mysqlTable(
+  "location_stock_movements",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    inventoryItemId: int("inventoryItemId").notNull(),
+    inventoryLocationId: int("inventoryLocationId").notNull(),
+    movementType: mysqlEnum("movementType", stockMovementTypes).notNull(),
+    delta: int("delta").notNull(),
+    quantityBefore: int("quantityBefore").notNull(),
+    quantityAfter: int("quantityAfter").notNull(),
+    reason: varchar("reason", { length: 240 }).notNull(),
+    reference: varchar("reference", { length: 128 }),
+    transferGroupId: varchar("transferGroupId", { length: 64 }),
+    createdById: int("createdById").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("location_movements_location_created_idx").on(table.inventoryLocationId, table.createdAt),
+    index("location_movements_item_created_idx").on(table.inventoryItemId, table.createdAt),
+    index("location_movements_transfer_idx").on(table.transferGroupId),
+  ],
+);
+
+/** Owner-facing alert history preserves both low-stock signals and recovery events. */
+export const stockAlertEvents = mysqlTable(
+  "stock_alert_events",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    inventoryItemId: int("inventoryItemId").notNull(),
+    eventType: mysqlEnum("eventType", stockAlertEventTypes).notNull(),
+    quantity: int("quantity").notNull(),
+    reorderThreshold: int("reorderThreshold").notNull(),
+    reason: varchar("reason", { length: 240 }).notNull(),
+    createdById: int("createdById").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [index("stock_alert_events_item_created_idx").on(table.inventoryItemId, table.createdAt)],
+);
+
+/** Image metadata points to managed S3 storage; binary image data never enters the database. */
 export const inventoryImages = mysqlTable(
   "inventory_images",
   {
@@ -115,4 +157,7 @@ export type InsertUser = typeof users.$inferInsert;
 export type InventoryItem = typeof inventoryItems.$inferSelect;
 export type InsertInventoryItem = typeof inventoryItems.$inferInsert;
 export type StockMovement = typeof stockMovements.$inferSelect;
+export type InventoryLocation = typeof inventoryLocations.$inferSelect;
+export type LocationStockMovement = typeof locationStockMovements.$inferSelect;
+export type StockAlertEvent = typeof stockAlertEvents.$inferSelect;
 export type InventoryImage = typeof inventoryImages.$inferSelect;

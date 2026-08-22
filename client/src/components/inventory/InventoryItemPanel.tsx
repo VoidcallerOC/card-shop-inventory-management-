@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { centsToDollars, CONDITIONS, dollarsToCents, formatMoney, itemName, MOVEMENT_TYPES, PRODUCT_TYPES, titleCase } from "@/lib/inventory";
-import { X, ImagePlus, Loader2, PackagePlus, History, Plus, Minus } from "lucide-react";
+import { ArrowRightLeft, BellRing, History, ImagePlus, Loader2, MapPin, Minus, PackagePlus, Plus, ShieldAlert, X } from "lucide-react";
 import type { inferRouterOutputs } from "@trpc/server";
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -8,285 +8,54 @@ import type { AppRouter } from "../../../../server/routers";
 
 type RouterOutput = inferRouterOutputs<AppRouter>;
 type InventoryItem = RouterOutput["inventory"]["list"][number];
+type ItemFormState = { productType: (typeof PRODUCT_TYPES)[number]; game: string; setName: string; cardName: string; collectorNumber: string; condition: (typeof CONDITIONS)[number]; variant: string; sku: string; purchasePrice: string; salePrice: string; onHand: string; reorderThreshold: string; storageLocation: string; notes: string };
 
-type ItemFormState = {
-  productType: (typeof PRODUCT_TYPES)[number];
-  game: string;
-  setName: string;
-  cardName: string;
-  collectorNumber: string;
-  condition: (typeof CONDITIONS)[number];
-  variant: string;
-  sku: string;
-  purchasePrice: string;
-  salePrice: string;
-  onHand: string;
-  reorderThreshold: string;
-  storageLocation: string;
-  notes: string;
-};
+function freshForm(): ItemFormState { return { productType: "single", game: "", setName: "", cardName: "", collectorNumber: "", condition: "near_mint", variant: "", sku: "", purchasePrice: "0.00", salePrice: "0.00", onHand: "0", reorderThreshold: "0", storageLocation: "", notes: "" }; }
+function formFromItem(item: InventoryItem): ItemFormState { return { productType: item.productType, game: item.game, setName: item.setName, cardName: item.cardName ?? "", collectorNumber: item.collectorNumber ?? "", condition: item.condition, variant: item.variant ?? "", sku: item.sku, purchasePrice: centsToDollars(item.purchasePriceCents), salePrice: centsToDollars(item.salePriceCents), onHand: String(item.onHand), reorderThreshold: String(item.reorderThreshold), storageLocation: item.storageLocation, notes: item.notes ?? "" }; }
+function FieldLabel({ children }: { children: React.ReactNode }) { return <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.12em] text-stone-500">{children}</label>; }
+function Control(props: React.InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={`field-control ${props.className ?? ""}`} />; }
 
-function freshForm(): ItemFormState {
-  return {
-    productType: "single",
-    game: "",
-    setName: "",
-    cardName: "",
-    collectorNumber: "",
-    condition: "near_mint",
-    variant: "",
-    sku: "",
-    purchasePrice: "0.00",
-    salePrice: "0.00",
-    onHand: "0",
-    reorderThreshold: "0",
-    storageLocation: "",
-    notes: "",
-  };
-}
-
-function formFromItem(item: InventoryItem): ItemFormState {
-  return {
-    productType: item.productType,
-    game: item.game,
-    setName: item.setName,
-    cardName: item.cardName ?? "",
-    collectorNumber: item.collectorNumber ?? "",
-    condition: item.condition,
-    variant: item.variant ?? "",
-    sku: item.sku,
-    purchasePrice: centsToDollars(item.purchasePriceCents),
-    salePrice: centsToDollars(item.salePriceCents),
-    onHand: String(item.onHand),
-    reorderThreshold: String(item.reorderThreshold),
-    storageLocation: item.storageLocation,
-    notes: item.notes ?? "",
-  };
-}
-
-function FieldLabel({ children }: { children: React.ReactNode }) {
-  return <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.12em] text-stone-500">{children}</label>;
-}
-
-function Control(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={`field-control ${props.className ?? ""}`} />;
-}
-
-export default function InventoryItemPanel({
-  item,
-  onClose,
-}: {
-  item: InventoryItem | null;
-  onClose: () => void;
-}) {
+export default function InventoryItemPanel({ item, onClose }: { item: InventoryItem | null; onClose: () => void }) {
   const utils = trpc.useUtils();
   const [liveItem, setLiveItem] = useState<InventoryItem | null>(item);
   const [form, setForm] = useState<ItemFormState>(() => (item ? formFromItem(item) : freshForm()));
-  const [tab, setTab] = useState<"details" | "images" | "adjust">("details");
-  const [adjustment, setAdjustment] = useState({ delta: "", movementType: "adjustment" as (typeof MOVEMENT_TYPES)[number], reason: "", reference: "" });
+  const [tab, setTab] = useState<"details" | "images" | "locations" | "adjust" | "alerts">("details");
+  const [adjustment, setAdjustment] = useState({ locationId: "", delta: "", movementType: "adjustment" as (typeof MOVEMENT_TYPES)[number], reason: "", reference: "" });
+  const [locationName, setLocationName] = useState("");
+  const [transfer, setTransfer] = useState({ source: "", destination: "", quantity: "", reason: "", reference: "" });
   const inputRef = useRef<HTMLInputElement>(null);
   const imagesQuery = trpc.inventory.images.useQuery({ inventoryItemId: item?.id ?? 0 }, { enabled: Boolean(item) });
-  const createItem = trpc.inventory.create.useMutation({
-    onSuccess: created => {
-      toast.success(`${itemName(created)} is now in inventory.`);
-      utils.inventory.invalidate();
-      onClose();
-    },
-    onError: error => toast.error(error.message),
-  });
-  const updateItem = trpc.inventory.updateMetadata.useMutation({
-    onSuccess: updated => {
-      toast.success("Inventory details saved.");
-      utils.inventory.invalidate();
-      if (updated) {
-        setLiveItem(updated);
-        setForm(formFromItem(updated));
-      }
-    },
-    onError: error => toast.error(error.message),
-  });
-  const adjustStock = trpc.inventory.adjustStock.useMutation({
-    onSuccess: result => {
-      toast.success("Stock movement recorded in the ledger.");
-      setLiveItem(result.item);
-      setAdjustment({ delta: "", movementType: "adjustment", reason: "", reference: "" });
-      utils.inventory.invalidate();
-    },
-    onError: error => toast.error(error.message),
-  });
-  const attachImage = trpc.inventory.attachImage.useMutation({
-    onSuccess: () => {
-      toast.success("Reference image attached.");
-      utils.inventory.images.invalidate();
-    },
-    onError: error => toast.error(error.message),
-  });
-
-  useEffect(() => {
-    setLiveItem(item);
-    setForm(item ? formFromItem(item) : freshForm());
-    setTab("details");
-  }, [item]);
-
-  const setValue = <Key extends keyof ItemFormState>(key: Key, value: ItemFormState[Key]) => setForm(current => ({ ...current, [key]: value }));
+  const locationsQuery = trpc.inventory.locations.useQuery({ inventoryItemId: item?.id ?? 0 }, { enabled: Boolean(item) });
+  const alertsQuery = trpc.inventory.alertHistory.useQuery({ inventoryItemId: item?.id ?? 0 }, { enabled: Boolean(item) });
   const currentItem = liveItem;
 
-  function payload() {
-    return {
-      productType: form.productType,
-      game: form.game.trim(),
-      setName: form.setName.trim(),
-      cardName: form.cardName.trim() || null,
-      collectorNumber: form.collectorNumber.trim() || null,
-      condition: form.productType === "sealed" ? "sealed" : form.condition,
-      variant: form.variant.trim() || null,
-      sku: form.sku.trim(),
-      purchasePriceCents: dollarsToCents(form.purchasePrice),
-      salePriceCents: dollarsToCents(form.salePrice),
-      onHand: Math.max(0, Number.parseInt(form.onHand, 10) || 0),
-      reorderThreshold: Math.max(0, Number.parseInt(form.reorderThreshold, 10) || 0),
-      storageLocation: form.storageLocation.trim(),
-      notes: form.notes.trim() || null,
-    };
-  }
+  useEffect(() => { setLiveItem(item); setForm(item ? formFromItem(item) : freshForm()); setTab("details"); setAdjustment({ locationId: "", delta: "", movementType: "adjustment", reason: "", reference: "" }); }, [item]);
+  useEffect(() => { if (!adjustment.locationId && locationsQuery.data?.[0]) setAdjustment(current => ({ ...current, locationId: String(locationsQuery.data?.[0].id ?? "") })); }, [adjustment.locationId, locationsQuery.data]);
 
-  function saveDetails(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const values = payload();
-    if (!values.game || !values.setName || !values.sku || !values.storageLocation) {
-      toast.error("Game, set, SKU, and storage location are required.");
-      return;
-    }
-    if (currentItem) {
-      const { onHand: _onHand, ...metadata } = values;
-      updateItem.mutate({ id: currentItem.id, expectedVersion: currentItem.version, ...metadata });
-    } else {
-      createItem.mutate(values);
-    }
-  }
+  const invalidateOperationalViews = () => { utils.inventory.invalidate(); utils.inventory.locations.invalidate(); utils.inventory.alertHistory.invalidate(); utils.inventory.movementHistory.invalidate(); utils.inventory.dashboard.invalidate(); };
+  const createItem = trpc.inventory.create.useMutation({ onSuccess: created => { toast.success(`${itemName(created)} is now in inventory.`); invalidateOperationalViews(); onClose(); }, onError: error => toast.error(error.message) });
+  const updateItem = trpc.inventory.updateMetadata.useMutation({ onSuccess: updated => { if (updated) { setLiveItem(updated); setForm(formFromItem(updated)); } toast.success("Inventory details saved."); invalidateOperationalViews(); }, onError: error => toast.error(error.message) });
+  const adjustStock = trpc.inventory.adjustStock.useMutation({ onSuccess: result => { setLiveItem(result.item); setAdjustment(current => ({ ...current, delta: "", reason: "", reference: "" })); toast.success("Location and total stock were updated in the ledger."); invalidateOperationalViews(); }, onError: error => toast.error(error.message) });
+  const addLocation = trpc.inventory.addLocation.useMutation({ onSuccess: () => { setLocationName(""); toast.success("Location created at zero balance."); invalidateOperationalViews(); }, onError: error => toast.error(error.message) });
+  const transferStock = trpc.inventory.transferStock.useMutation({ onSuccess: result => { setLiveItem(result.item); setTransfer({ source: "", destination: "", quantity: "", reason: "", reference: "" }); toast.success("Transfer recorded with paired location movements."); invalidateOperationalViews(); }, onError: error => toast.error(error.message) });
+  const attachImage = trpc.inventory.attachImage.useMutation({ onSuccess: () => { toast.success("Reference image attached."); utils.inventory.images.invalidate(); }, onError: error => toast.error(error.message) });
 
-  function recordAdjustment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!currentItem) return;
-    const delta = Number.parseInt(adjustment.delta, 10);
-    if (!Number.isInteger(delta) || delta === 0 || adjustment.reason.trim().length < 2) {
-      toast.error("Add a non-zero quantity and a reason for this movement.");
-      return;
-    }
-    adjustStock.mutate({
-      inventoryItemId: currentItem.id,
-      expectedVersion: currentItem.version,
-      delta,
-      movementType: adjustment.movementType,
-      reason: adjustment.reason.trim(),
-      reference: adjustment.reference.trim() || null,
-    });
-  }
+  const setValue = <Key extends keyof ItemFormState>(key: Key, value: ItemFormState[Key]) => setForm(current => ({ ...current, [key]: value }));
+  function payload() { return { productType: form.productType, game: form.game.trim(), setName: form.setName.trim(), cardName: form.cardName.trim() || null, collectorNumber: form.collectorNumber.trim() || null, condition: form.productType === "sealed" ? "sealed" : form.condition, variant: form.variant.trim() || null, sku: form.sku.trim(), purchasePriceCents: dollarsToCents(form.purchasePrice), salePriceCents: dollarsToCents(form.salePrice), onHand: Math.max(0, Number.parseInt(form.onHand, 10) || 0), reorderThreshold: Math.max(0, Number.parseInt(form.reorderThreshold, 10) || 0), storageLocation: form.storageLocation.trim(), notes: form.notes.trim() || null }; }
+  function saveDetails(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const values = payload(); if (!values.game || !values.setName || !values.sku || !values.storageLocation) return toast.error("Game, set, SKU, and intake location are required."); if (currentItem) { const { onHand: _onHand, ...metadata } = values; updateItem.mutate({ id: currentItem.id, expectedVersion: currentItem.version, ...metadata }); } else createItem.mutate(values); }
+  function recordAdjustment(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!currentItem) return; const location = locationsQuery.data?.find(entry => entry.id === Number(adjustment.locationId)); const delta = Number.parseInt(adjustment.delta, 10); if (!location || !Number.isInteger(delta) || !delta || adjustment.reason.trim().length < 2) return toast.error("Choose a location, enter a non-zero quantity, and record a reason."); adjustStock.mutate({ inventoryItemId: currentItem.id, inventoryLocationId: location.id, expectedVersion: currentItem.version, expectedLocationVersion: location.version, delta, movementType: adjustment.movementType, reason: adjustment.reason.trim(), reference: adjustment.reference.trim() || null }); }
+  function createLocation(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!currentItem || locationName.trim().length < 2) return toast.error("Enter a clear location name."); addLocation.mutate({ inventoryItemId: currentItem.id, name: locationName.trim() }); }
+  function recordTransfer(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!currentItem) return; const source = locationsQuery.data?.find(entry => entry.id === Number(transfer.source)); const destination = locationsQuery.data?.find(entry => entry.id === Number(transfer.destination)); const quantity = Number.parseInt(transfer.quantity, 10); if (!source || !destination || source.id === destination.id || !Number.isInteger(quantity) || quantity <= 0 || transfer.reason.trim().length < 2) return toast.error("Choose distinct locations, a positive quantity, and a transfer reason."); transferStock.mutate({ inventoryItemId: currentItem.id, expectedVersion: currentItem.version, sourceLocationId: source.id, expectedSourceVersion: source.version, destinationLocationId: destination.id, expectedDestinationVersion: destination.version, quantity, reason: transfer.reason.trim(), reference: transfer.reference.trim() || null }); }
+  function handleImage(event: ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file || !currentItem) return; if (!file.type.match(/^image\/(png|jpeg|webp|gif)$/)) return toast.error("Choose a PNG, JPEG, WebP, or GIF image."); if (file.size > 5 * 1024 * 1024) return toast.error("Images must be no larger than 5 MB."); const reader = new FileReader(); reader.onload = () => attachImage.mutate({ inventoryItemId: currentItem.id, fileName: file.name, dataUrl: String(reader.result), caption: null }); reader.readAsDataURL(file); }
+  const activeLowStock = Boolean(currentItem?.reorderThreshold && currentItem.onHand <= currentItem.reorderThreshold);
 
-  function handleImage(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file || !currentItem) return;
-    if (!file.type.match(/^image\/(png|jpeg|webp|gif)$/)) {
-      toast.error("Choose a PNG, JPEG, WebP, or GIF image.");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error("Images must be no larger than 5 MB.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      attachImage.mutate({ inventoryItemId: currentItem.id, fileName: file.name, dataUrl: String(reader.result), caption: null });
-    };
-    reader.readAsDataURL(file);
-  }
-
-  return (
-    <div className="fixed inset-0 z-[70] flex justify-end bg-[#17150f]/45 backdrop-blur-sm">
-      <section aria-label="Inventory editor" className="panel-enter flex h-full w-full max-w-2xl flex-col overflow-hidden border-l border-[#ddd5c4] bg-[#faf8f3] shadow-2xl">
-        <header className="flex items-start justify-between border-b border-[#e5dfd1] px-6 py-5">
-          <div>
-            <p className="eyebrow">{currentItem ? "Inventory record" : "New stock record"}</p>
-            <h2 className="mt-1 font-display text-2xl text-[#252319]">{currentItem ? itemName(currentItem) : "Add to the vault"}</h2>
-            {currentItem && <p className="mt-1 text-sm text-stone-500">{currentItem.sku} · {currentItem.onHand} on hand · {formatMoney(currentItem.salePriceCents)}</p>}
-          </div>
-          <button onClick={onClose} className="icon-button" aria-label="Close inventory editor"><X size={19} /></button>
-        </header>
-
-        {currentItem && (
-          <nav className="flex gap-1 border-b border-[#e5dfd1] px-6 pt-3">
-            {[
-              { key: "details" as const, label: "Details", Icon: PackagePlus },
-              { key: "images" as const, label: `Images ${imagesQuery.data?.length ? `(${imagesQuery.data.length})` : ""}`, Icon: ImagePlus },
-              { key: "adjust" as const, label: "Adjust stock", Icon: History },
-            ].map(({ key, label, Icon }) => (
-              <button key={key} onClick={() => setTab(key)} className={`panel-tab ${tab === key ? "is-active" : ""}`}>
-                <Icon size={15} /> {label}
-              </button>
-            ))}
-          </nav>
-        )}
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-          {tab === "details" && (
-            <form onSubmit={saveDetails} className="space-y-6">
-              <div className="rounded-2xl border border-[#e5dfd1] bg-white p-4">
-                <div className="grid grid-cols-2 gap-3">
-                  {PRODUCT_TYPES.map(type => (
-                    <button type="button" key={type} onClick={() => setValue("productType", type)} className={`type-card ${form.productType === type ? "is-selected" : ""}`}>
-                      <span className="font-semibold">{titleCase(type)}</span>
-                      <span>{type === "single" ? "Condition-aware card record" : "Sealed product or accessory"}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div><FieldLabel>Game</FieldLabel><Control value={form.game} onChange={event => setValue("game", event.target.value)} placeholder="e.g. Magic: The Gathering" /></div>
-                <div><FieldLabel>Set</FieldLabel><Control value={form.setName} onChange={event => setValue("setName", event.target.value)} placeholder="e.g. Modern Horizons 3" /></div>
-                <div><FieldLabel>{form.productType === "sealed" ? "Product name" : "Card name"}</FieldLabel><Control value={form.cardName} onChange={event => setValue("cardName", event.target.value)} placeholder={form.productType === "sealed" ? "Collector Booster Box" : "Sheoldred, the Apocalypse"} /></div>
-                <div><FieldLabel>SKU</FieldLabel><Control value={form.sku} onChange={event => setValue("sku", event.target.value)} placeholder="MTG-MH3-CBB-001" /></div>
-                {form.productType === "single" && <><div><FieldLabel>Condition</FieldLabel><select value={form.condition} onChange={event => setValue("condition", event.target.value as ItemFormState["condition"])} className="field-control">{CONDITIONS.filter(condition => condition !== "sealed").map(condition => <option key={condition} value={condition}>{titleCase(condition)}</option>)}</select></div><div><FieldLabel>Collector number</FieldLabel><Control value={form.collectorNumber} onChange={event => setValue("collectorNumber", event.target.value)} placeholder="150" /></div></>}
-                <div><FieldLabel>Variant</FieldLabel><Control value={form.variant} onChange={event => setValue("variant", event.target.value)} placeholder="Foil, extended art, first edition…" /></div>
-                <div><FieldLabel>Storage location</FieldLabel><Control value={form.storageLocation} onChange={event => setValue("storageLocation", event.target.value)} placeholder="Case A · Row 3 · Slot 12" /></div>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div><FieldLabel>Cost</FieldLabel><div className="money-input"><span>$</span><Control type="number" min="0" step="0.01" value={form.purchasePrice} onChange={event => setValue("purchasePrice", event.target.value)} /></div></div>
-                <div><FieldLabel>Sale price</FieldLabel><div className="money-input"><span>$</span><Control type="number" min="0" step="0.01" value={form.salePrice} onChange={event => setValue("salePrice", event.target.value)} /></div></div>
-                {!currentItem && <div><FieldLabel>Opening quantity</FieldLabel><Control type="number" min="0" step="1" value={form.onHand} onChange={event => setValue("onHand", event.target.value)} /></div>}
-                <div><FieldLabel>Reorder threshold</FieldLabel><Control type="number" min="0" step="1" value={form.reorderThreshold} onChange={event => setValue("reorderThreshold", event.target.value)} /></div>
-              </div>
-              <div><FieldLabel>Notes</FieldLabel><textarea value={form.notes} onChange={event => setValue("notes", event.target.value)} className="field-control min-h-24 resize-y" placeholder="Grading notes, supplier details, special handling…" /></div>
-              <div className="flex justify-end gap-3 border-t border-[#e5dfd1] pt-5"><button type="button" onClick={onClose} className="button-secondary">Cancel</button><button type="submit" disabled={createItem.isPending || updateItem.isPending} className="button-primary">{(createItem.isPending || updateItem.isPending) && <Loader2 size={16} className="animate-spin" />}{currentItem ? "Save details" : "Create inventory record"}</button></div>
-            </form>
-          )}
-
-          {tab === "images" && currentItem && (
-            <div className="space-y-5">
-              <div className="rounded-2xl border border-dashed border-[#c7bba4] bg-[#f5f0e6] p-6 text-center">
-                <ImagePlus className="mx-auto mb-3 text-[#806d4d]" size={28} />
-                <h3 className="font-display text-lg text-[#252319]">Attach visual references</h3>
-                <p className="mx-auto mt-1 max-w-sm text-sm text-stone-500">Keep card fronts, sealed product photos, and condition-reference images with this record.</p>
-                <input ref={inputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={handleImage} />
-                <button onClick={() => inputRef.current?.click()} disabled={attachImage.isPending} className="button-secondary mt-4">{attachImage.isPending ? <Loader2 size={16} className="animate-spin" /> : <ImagePlus size={16} />} Upload image</button>
-              </div>
-              {imagesQuery.isLoading ? <div className="flex justify-center py-10"><Loader2 className="animate-spin text-[#806d4d]" /></div> : imagesQuery.data?.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{imagesQuery.data.map(image => <a href={image.url} target="_blank" rel="noreferrer" key={image.id} className="group overflow-hidden rounded-xl border border-[#e5dfd1] bg-white"><div className="aspect-square overflow-hidden bg-[#eee8dc]"><img src={image.url} alt={image.caption || image.fileName} className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" /></div><p className="truncate px-3 py-2 text-xs text-stone-500">{image.fileName}</p></a>)}</div> : <div className="empty-state">No reference images are attached yet.</div>}
-            </div>
-          )}
-
-          {tab === "adjust" && currentItem && (
-            <form onSubmit={recordAdjustment} className="space-y-5">
-              <div className="ledger-note"><History size={18} /><div><strong>Every adjustment creates a permanent ledger entry.</strong><span>Stock is version-checked before it changes, so concurrent edits never silently overwrite another staff member’s update.</span></div></div>
-              <div className="rounded-2xl border border-[#e5dfd1] bg-white p-5"><p className="eyebrow">Current balance</p><p className="mt-1 font-display text-5xl text-[#252319]">{currentItem.onHand}<span className="ml-2 text-base font-sans font-medium text-stone-400">on hand</span></p><p className="mt-2 text-sm text-stone-500">Reorder alert at {currentItem.reorderThreshold || "not tracked"} units · Version {currentItem.version}</p></div>
-              <div className="grid gap-4 sm:grid-cols-2"><div><FieldLabel>Quantity change</FieldLabel><div className="quantity-control"><button type="button" onClick={() => setAdjustment(current => ({ ...current, delta: String((Number(current.delta) || 0) - 1) }))}><Minus size={15} /></button><Control type="number" step="1" value={adjustment.delta} onChange={event => setAdjustment(current => ({ ...current, delta: event.target.value }))} placeholder="+0" /><button type="button" onClick={() => setAdjustment(current => ({ ...current, delta: String((Number(current.delta) || 0) + 1) }))}><Plus size={15} /></button></div></div><div><FieldLabel>Movement type</FieldLabel><select value={adjustment.movementType} onChange={event => setAdjustment(current => ({ ...current, movementType: event.target.value as typeof current.movementType }))} className="field-control">{MOVEMENT_TYPES.map(type => <option value={type} key={type}>{titleCase(type)}</option>)}</select></div></div>
-              <div><FieldLabel>Reason</FieldLabel><Control value={adjustment.reason} onChange={event => setAdjustment(current => ({ ...current, reason: event.target.value }))} placeholder="e.g. POS sale, distributor delivery, cycle count" /></div>
-              <div><FieldLabel>Reference (optional)</FieldLabel><Control value={adjustment.reference} onChange={event => setAdjustment(current => ({ ...current, reference: event.target.value }))} placeholder="Receipt, invoice, order, or count ID" /></div>
-              <div className="flex justify-end border-t border-[#e5dfd1] pt-5"><button type="submit" disabled={adjustStock.isPending} className="button-primary">{adjustStock.isPending && <Loader2 size={16} className="animate-spin" />}Record movement</button></div>
-            </form>
-          )}
-        </div>
-      </section>
-    </div>
-  );
+  return <div className="fixed inset-0 z-[70] flex justify-end bg-[#17150f]/45 backdrop-blur-sm"><section aria-label="Inventory editor" className="panel-enter flex h-full w-full max-w-2xl flex-col overflow-hidden border-l border-[#ddd5c4] bg-[#faf8f3] shadow-2xl"><header className="flex items-start justify-between border-b border-[#e5dfd1] px-6 py-5"><div><p className="eyebrow">{currentItem ? "Inventory control record" : "New stock record"}</p><h2 className="mt-1 font-display text-2xl text-[#252319]">{currentItem ? itemName(currentItem) : "Add to the vault"}</h2>{currentItem && <p className="mt-1 text-sm text-stone-500">{currentItem.sku} · {currentItem.onHand} on hand · {formatMoney(currentItem.salePriceCents)}</p>}</div><button onClick={onClose} className="icon-button" aria-label="Close inventory editor"><X size={19} /></button></header>
+    {currentItem && <nav className="flex gap-1 overflow-x-auto border-b border-[#e5dfd1] px-6 pt-3">{[{ key: "details" as const, label: "Details", Icon: PackagePlus }, { key: "locations" as const, label: `Locations (${locationsQuery.data?.length ?? 0})`, Icon: MapPin }, { key: "adjust" as const, label: "Adjust", Icon: History }, { key: "alerts" as const, label: "Alerts", Icon: BellRing }, { key: "images" as const, label: `Images (${imagesQuery.data?.length ?? 0})`, Icon: ImagePlus }].map(({ key, label, Icon }) => <button key={key} onClick={() => setTab(key)} className={`panel-tab whitespace-nowrap ${tab === key ? "is-active" : ""}`}><Icon size={15} /> {label}</button>)}</nav>}
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+      {tab === "details" && <form onSubmit={saveDetails} className="space-y-6"><div className="rounded-2xl border border-[#e5dfd1] bg-white p-4"><div className="grid grid-cols-2 gap-3">{PRODUCT_TYPES.map(type => <button type="button" key={type} onClick={() => setValue("productType", type)} className={`type-card ${form.productType === type ? "is-selected" : ""}`}><span className="font-semibold">{titleCase(type)}</span><span>{type === "single" ? "Condition-aware card record" : "Sealed product or accessory"}</span></button>)}</div></div><div className="grid gap-4 sm:grid-cols-2"><div><FieldLabel>Game</FieldLabel><Control value={form.game} onChange={event => setValue("game", event.target.value)} placeholder="Magic: The Gathering" /></div><div><FieldLabel>Set</FieldLabel><Control value={form.setName} onChange={event => setValue("setName", event.target.value)} placeholder="Modern Horizons 3" /></div><div><FieldLabel>{form.productType === "sealed" ? "Product name" : "Card name"}</FieldLabel><Control value={form.cardName} onChange={event => setValue("cardName", event.target.value)} placeholder="Card or sealed product name" /></div><div><FieldLabel>SKU</FieldLabel><Control value={form.sku} onChange={event => setValue("sku", event.target.value)} placeholder="MTG-MH3-001" /></div>{form.productType === "single" && <><div><FieldLabel>Condition</FieldLabel><select value={form.condition} onChange={event => setValue("condition", event.target.value as ItemFormState["condition"])} className="field-control">{CONDITIONS.filter(condition => condition !== "sealed").map(condition => <option key={condition} value={condition}>{titleCase(condition)}</option>)}</select></div><div><FieldLabel>Collector number</FieldLabel><Control value={form.collectorNumber} onChange={event => setValue("collectorNumber", event.target.value)} placeholder="150" /></div></>}<div><FieldLabel>Variant</FieldLabel><Control value={form.variant} onChange={event => setValue("variant", event.target.value)} placeholder="Foil, extended art…" /></div><div><FieldLabel>Primary intake location</FieldLabel><Control value={form.storageLocation} onChange={event => setValue("storageLocation", event.target.value)} placeholder="Case A · Row 3" /></div></div><div className="grid gap-4 sm:grid-cols-3"><div><FieldLabel>Cost</FieldLabel><div className="money-input"><span>$</span><Control type="number" min="0" step="0.01" value={form.purchasePrice} onChange={event => setValue("purchasePrice", event.target.value)} /></div></div><div><FieldLabel>Sale price</FieldLabel><div className="money-input"><span>$</span><Control type="number" min="0" step="0.01" value={form.salePrice} onChange={event => setValue("salePrice", event.target.value)} /></div></div>{!currentItem && <div><FieldLabel>Opening quantity</FieldLabel><Control type="number" min="0" step="1" value={form.onHand} onChange={event => setValue("onHand", event.target.value)} /></div>}<div><FieldLabel>Reorder threshold</FieldLabel><Control type="number" min="0" step="1" value={form.reorderThreshold} onChange={event => setValue("reorderThreshold", event.target.value)} /></div></div><div><FieldLabel>Notes</FieldLabel><textarea value={form.notes} onChange={event => setValue("notes", event.target.value)} className="field-control min-h-24 resize-y" placeholder="Condition, supplier, or handling notes…" /></div><div className="flex justify-end gap-3 border-t border-[#e5dfd1] pt-5"><button type="button" onClick={onClose} className="button-secondary">Cancel</button><button type="submit" disabled={createItem.isPending || updateItem.isPending} className="button-primary">{(createItem.isPending || updateItem.isPending) && <Loader2 size={16} className="animate-spin" />}{currentItem ? "Save details" : "Create inventory record"}</button></div></form>}
+      {tab === "locations" && currentItem && <div className="space-y-5"><div className="ledger-note"><ArrowRightLeft size={18} /><div><strong>Location balances are synchronized to the SKU total.</strong><span>Transfers write paired source and destination records while preserving total availability.</span></div></div><div className="rounded-2xl border border-[#e5dfd1] bg-white p-5"><div className="flex items-center justify-between"><div><p className="eyebrow">Total tracked stock</p><p className="mt-1 font-display text-4xl text-[#252319]">{currentItem.onHand}<span className="ml-2 text-sm font-sans text-stone-400">units</span></p></div><div className="rounded-xl bg-[#f3ead9] px-3 py-2 text-right"><strong className="block text-sm text-[#6d582e]">{locationsQuery.data?.length ?? 0} locations</strong><span className="text-[10px] text-[#8a7755]">live balances</span></div></div></div><div className="overflow-hidden rounded-2xl border border-[#e5dfd1] bg-white">{locationsQuery.isLoading ? <div className="flex justify-center py-8"><Loader2 className="animate-spin text-[#806d4d]" /></div> : locationsQuery.data?.map(location => <div key={location.id} className="flex items-center justify-between gap-4 border-b border-[#eee8dd] px-5 py-4 last:border-0"><div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl bg-[#e8dfcf] text-[#806d4d]"><MapPin size={16} /></div><div><strong className="block text-sm text-[#39362c]">{location.name}</strong><span className="text-[11px] text-stone-500">Version {location.version}{location.isPrimary ? " · primary" : ""}</span></div></div><div className="text-right"><strong className="font-display text-2xl text-[#252319]">{location.onHand}</strong><span className="block text-[10px] uppercase tracking-[0.1em] text-stone-400">on hand</span></div></div>)}</div><form onSubmit={createLocation} className="rounded-2xl border border-dashed border-[#cdbd9e] bg-[#f7f1e6] p-4"><FieldLabel>Add controlled location</FieldLabel><div className="flex gap-2"><Control value={locationName} onChange={event => setLocationName(event.target.value)} placeholder="Backstock B · Shelf 4" /><button type="submit" disabled={addLocation.isPending} className="button-secondary whitespace-nowrap">{addLocation.isPending ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Add location</button></div><p className="mt-2 text-[11px] text-stone-500">New locations begin at zero—receive stock there or move it from another location.</p></form>{(locationsQuery.data?.length ?? 0) > 1 && <form onSubmit={recordTransfer} className="rounded-2xl border border-[#d7c9ae] bg-[#fffdf8] p-5"><div className="mb-4 flex items-start gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl bg-[#eee1c6] text-[#735e31]"><ArrowRightLeft size={17} /></div><div><p className="eyebrow">Location transfer</p><h3 className="font-display text-xl text-[#252319]">Move stock without changing total availability</h3></div></div><div className="grid gap-3 sm:grid-cols-2"><div><FieldLabel>From</FieldLabel><select value={transfer.source} onChange={event => setTransfer(current => ({ ...current, source: event.target.value }))} className="field-control"><option value="">Choose source</option>{locationsQuery.data?.map(location => <option value={location.id} key={location.id}>{location.name} · {location.onHand} on hand</option>)}</select></div><div><FieldLabel>To</FieldLabel><select value={transfer.destination} onChange={event => setTransfer(current => ({ ...current, destination: event.target.value }))} className="field-control"><option value="">Choose destination</option>{locationsQuery.data?.map(location => <option value={location.id} key={location.id}>{location.name} · {location.onHand} on hand</option>)}</select></div><div><FieldLabel>Units to move</FieldLabel><Control type="number" min="1" step="1" value={transfer.quantity} onChange={event => setTransfer(current => ({ ...current, quantity: event.target.value }))} placeholder="0" /></div><div><FieldLabel>Reference</FieldLabel><Control value={transfer.reference} onChange={event => setTransfer(current => ({ ...current, reference: event.target.value }))} placeholder="Ticket or event" /></div></div><div className="mt-3"><FieldLabel>Reason</FieldLabel><Control value={transfer.reason} onChange={event => setTransfer(current => ({ ...current, reason: event.target.value }))} placeholder="Refill display case before event" /></div><div className="mt-5 flex justify-end"><button type="submit" disabled={transferStock.isPending} className="button-primary">{transferStock.isPending && <Loader2 size={16} className="animate-spin" />}Record transfer</button></div></form>}</div>}
+      {tab === "adjust" && currentItem && <form onSubmit={recordAdjustment} className="space-y-5"><div className="ledger-note"><History size={18} /><div><strong>Adjust a specific location, not an abstract total.</strong><span>This single action updates its location balance, the SKU total, and both audit ledgers atomically.</span></div></div><div className="rounded-2xl border border-[#e5dfd1] bg-white p-5"><p className="eyebrow">Current balance</p><p className="mt-1 font-display text-5xl text-[#252319]">{currentItem.onHand}<span className="ml-2 text-base font-sans text-stone-400">total units</span></p><p className="mt-2 text-sm text-stone-500">Reorder threshold: {currentItem.reorderThreshold || "not tracked"} · Item version {currentItem.version}</p></div><div><FieldLabel>Physical location affected</FieldLabel><select value={adjustment.locationId} onChange={event => setAdjustment(current => ({ ...current, locationId: event.target.value }))} className="field-control"><option value="">Choose location</option>{locationsQuery.data?.map(location => <option key={location.id} value={location.id}>{location.name} · {location.onHand} on hand</option>)}</select></div><div className="grid gap-4 sm:grid-cols-2"><div><FieldLabel>Quantity change</FieldLabel><div className="quantity-control"><button type="button" onClick={() => setAdjustment(current => ({ ...current, delta: String((Number(current.delta) || 0) - 1) }))}><Minus size={15} /></button><Control type="number" step="1" value={adjustment.delta} onChange={event => setAdjustment(current => ({ ...current, delta: event.target.value }))} placeholder="+0" /><button type="button" onClick={() => setAdjustment(current => ({ ...current, delta: String((Number(current.delta) || 0) + 1) }))}><Plus size={15} /></button></div></div><div><FieldLabel>Movement type</FieldLabel><select value={adjustment.movementType} onChange={event => setAdjustment(current => ({ ...current, movementType: event.target.value as typeof current.movementType }))} className="field-control">{MOVEMENT_TYPES.map(type => <option value={type} key={type}>{titleCase(type)}</option>)}</select></div></div><div><FieldLabel>Reason</FieldLabel><Control value={adjustment.reason} onChange={event => setAdjustment(current => ({ ...current, reason: event.target.value }))} placeholder="POS sale, delivery, or cycle count" /></div><div><FieldLabel>Reference</FieldLabel><Control value={adjustment.reference} onChange={event => setAdjustment(current => ({ ...current, reference: event.target.value }))} placeholder="Receipt, invoice, or count ID" /></div><div className="flex justify-end border-t border-[#e5dfd1] pt-5"><button type="submit" disabled={adjustStock.isPending} className="button-primary">{adjustStock.isPending && <Loader2 size={16} className="animate-spin" />}Record location movement</button></div></form>}
+      {tab === "alerts" && currentItem && <div className="space-y-5"><div className={`rounded-2xl border p-5 ${activeLowStock ? "border-[#dba79d] bg-[#fbebe7]" : "border-[#d5cdbd] bg-[#f7f3e8]"}`}><div className="flex items-start gap-3"><ShieldAlert className={activeLowStock ? "text-[#a44535]" : "text-[#806d4d]"} size={21} /><div><p className="eyebrow">Current reorder signal</p><h3 className="mt-1 font-display text-xl text-[#252319]">{activeLowStock ? "Low-stock alert is active" : currentItem.reorderThreshold ? "Stock is above reorder threshold" : "Reorder tracking is not enabled"}</h3><p className="mt-2 text-sm text-stone-600">{currentItem.onHand} total units on hand {currentItem.reorderThreshold ? `against a ${currentItem.reorderThreshold}-unit threshold.` : "with no reorder threshold configured."}</p></div></div></div><div className="overflow-hidden rounded-2xl border border-[#e5dfd1] bg-white"><div className="border-b border-[#e5dfd1] px-5 py-4"><p className="eyebrow">Alert history</p><h3 className="mt-1 font-display text-xl text-[#252319]">Retained signals for this SKU</h3></div>{alertsQuery.isLoading ? <div className="flex justify-center py-10"><Loader2 className="animate-spin text-[#806d4d]" /></div> : alertsQuery.data?.length ? alertsQuery.data.map(alert => <div key={alert.id} className="flex items-center justify-between gap-4 border-b border-[#eee8dd] px-5 py-4 last:border-0"><div><strong className={alert.eventType === "low_stock" ? "text-sm text-[#a44535]" : "text-sm text-emerald-700"}>{alert.eventType === "low_stock" ? "Low-stock alert sent" : "Stock recovered"}</strong><span className="mt-1 block text-[11px] text-stone-500">{alert.reason}</span></div><div className="text-right"><strong className="block text-sm text-[#39362c]">{alert.quantity} / {alert.reorderThreshold}</strong><span className="text-[10px] text-stone-400">{new Date(alert.createdAt).toLocaleString()}</span></div></div>) : <div className="empty-state">No alerts yet. This log will retain both low-stock and recovery events.</div>}</div></div>}
+      {tab === "images" && currentItem && <div className="space-y-5"><div className="rounded-2xl border border-dashed border-[#c7bba4] bg-[#f5f0e6] p-6 text-center"><ImagePlus className="mx-auto mb-3 text-[#806d4d]" size={28} /><h3 className="font-display text-lg text-[#252319]">Attach visual references</h3><p className="mx-auto mt-1 max-w-sm text-sm text-stone-500">Keep card fronts, sealed product photos, and condition references with this record.</p><input ref={inputRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={handleImage} /><button onClick={() => inputRef.current?.click()} disabled={attachImage.isPending} className="button-secondary mt-4">{attachImage.isPending ? <Loader2 size={16} className="animate-spin" /> : <ImagePlus size={16} />} Upload image</button></div>{imagesQuery.isLoading ? <div className="flex justify-center py-10"><Loader2 className="animate-spin text-[#806d4d]" /></div> : imagesQuery.data?.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{imagesQuery.data.map(image => <a href={image.url} target="_blank" rel="noreferrer" key={image.id} className="group overflow-hidden rounded-xl border border-[#e5dfd1] bg-white"><div className="aspect-square overflow-hidden bg-[#eee8dc]"><img src={image.url} alt={image.caption || image.fileName} className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" /></div><p className="truncate px-3 py-2 text-xs text-stone-500">{image.fileName}</p></a>)}</div> : <div className="empty-state">No reference images are attached yet.</div>}</div>}
+    </div></section></div>;
 }

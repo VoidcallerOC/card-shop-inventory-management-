@@ -8,7 +8,7 @@ export const CONDITIONS = [
   "sealed",
 ] as const;
 
-export const MOVEMENT_TYPES = ["receive", "sale", "return", "adjustment", "correction", "transfer"] as const;
+export const MOVEMENT_TYPES = ["receive", "sale", "return", "adjustment", "correction"] as const;
 
 export function titleCase(value: string | null | undefined) {
   if (!value) return "—";
