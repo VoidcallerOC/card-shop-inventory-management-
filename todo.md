@@ -10,5 +10,5 @@
 - [x] Create unit coverage for inventory mutations and stock movement integrity.
 - [x] Validate the responsive interface, database migration, and dashboard flows.
 - [x] Synchronize the completed implementation to the requested GitHub repository.
-- [ ] Add tRPC mutation coverage for adjustment success, stale-version conflict, and immutable ledger insertion.
-- [ ] Synchronize the implementation source into the requested `card-shop-inventory-management-` repository and push the completed commit.
+- [x] Add tRPC mutation coverage for adjustment success, stale-version conflict, and immutable ledger insertion.
+- [x] Synchronize the implementation source into the requested `card-shop-inventory-management-` repository and push the completed commit.
