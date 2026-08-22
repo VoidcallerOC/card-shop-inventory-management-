@@ -15,4 +15,4 @@
 - [x] Model and persist per-location on-hand balances for each inventory record.
 - [x] Add concurrent-safe location-to-location transfer mutations that create auditable linked movements.
 - [x] Make per-location stock, reorder risk, low-stock alert status, and alert history visible in inventory and dashboard views.
-- [ ] Push the tested multi-location enhancement to the requested repository.
+- [x] Push the tested multi-location enhancement to the requested repository.
