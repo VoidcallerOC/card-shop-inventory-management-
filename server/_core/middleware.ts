@@ -38,10 +38,10 @@ export function setupSecurityHeaders(app: Application) {
         helmet.contentSecurityPolicy({
           directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+            scriptSrc: ["'self'"],
             styleSrc: ["'self'", "'unsafe-inline'"],
-            imgSrc: ["'self'", "data:", "blob:"],
-            connectSrc: ["'self'"],
+            imgSrc: ["'self'", "https:", "data:", "blob:"],
+            connectSrc: ["'self'", "https:"],
           },
         }) as AsyncMiddleware
       );
@@ -100,15 +100,29 @@ export function setupRateLimiting(app: Application) {
 
 // CORS middleware
 export function setupCors(app: Application) {
-  // CORS is handled by Manus platform, but we add explicit headers for clarity
-  app.use((_req: Request, res: Response, next: NextFunction) => {
-    res.setHeader("Access-Control-Allow-Origin", Config.security.cors.origin);
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const requestOrigin = req.header("Origin");
+    const allowedOrigin = requestOrigin && Config.security.cors.origins.includes(requestOrigin)
+      ? requestOrigin
+      : undefined;
+
+    if (allowedOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader(
       "Access-Control-Allow-Headers",
       "Origin, X-Requested-With, Content-Type, Accept, Authorization"
     );
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET, POST, PUT, DELETE, OPTIONS"
+    );
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
     next();
   });
 }

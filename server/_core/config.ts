@@ -26,11 +26,14 @@ export const Config = {
 
   security: {
     cors: {
-      origin: process.env.CORS_ORIGIN || "*",
+      origins: (process.env.CORS_ORIGIN || "http://localhost:3000")
+        .split(",")
+        .map(origin => origin.trim())
+        .filter(Boolean),
       credentials: true,
     },
     helmet: {
-      contentSecurityPolicy: false, // Disable if using Manus platform
+      contentSecurityPolicy: process.env.ENABLE_CSP !== "false",
       crossOriginResourcePolicy: { policy: "cross-origin" as const },
     },
   },
