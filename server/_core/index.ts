@@ -37,9 +37,9 @@ async function startServer() {
   // Setup middleware (logging, security, rate limiting, CORS)
   setupMiddleware(app);
   
-  // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Keep JSON large enough for the 5 MB base64 image upload, but reject oversized payloads.
+  app.use(express.json({ limit: "8mb" }));
+  app.use(express.urlencoded({ limit: "100kb", extended: true }));
   
   // Register routes
   registerStorageProxy(app);
