@@ -111,6 +111,58 @@ export async function getInventoryItem(itemId: number) {
   return (await db.select().from(inventoryItems).where(eq(inventoryItems.id, itemId)).limit(1))[0];
 }
 
+export async function getInventoryItemBySku(sku: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const normalized = sku.trim();
+  if (!normalized) return undefined;
+  return (await db.select().from(inventoryItems).where(eq(inventoryItems.sku, normalized)).limit(1))[0];
+}
+
+export async function findStockMovementByReference(reference: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const normalized = reference.trim();
+  if (!normalized) return undefined;
+  return (
+    await db
+      .select()
+      .from(stockMovements)
+      .where(eq(stockMovements.reference, normalized))
+      .orderBy(desc(stockMovements.id))
+      .limit(1)
+  )[0];
+}
+
+export async function findInventoryMatchCandidates({
+  cardName,
+  condition,
+  sku,
+  limit = 5,
+}: {
+  cardName?: string | null;
+  condition?: (typeof inventoryItems.condition.enumValues)[number] | null;
+  sku?: string | null;
+  limit?: number;
+}) {
+  const db = await getDb();
+  if (!db) return [];
+  if (sku?.trim()) {
+    const exact = await getInventoryItemBySku(sku);
+    return exact ? [exact] : [];
+  }
+  const name = cardName?.trim();
+  if (!name) return [];
+  const clauses = [like(inventoryItems.cardName, `%${name}%`)];
+  if (condition) clauses.push(eq(inventoryItems.condition, condition));
+  return db
+    .select()
+    .from(inventoryItems)
+    .where(and(...clauses))
+    .orderBy(desc(inventoryItems.updatedAt))
+    .limit(limit);
+}
+
 export async function listInventoryLocations(itemId: number) {
   const db = await getDb();
   if (!db) return [];

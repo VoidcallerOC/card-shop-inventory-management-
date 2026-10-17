@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { startLogin } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { BookOpenCheck, Boxes, LayoutDashboard, LogOut, PanelLeft, Plus } from "lucide-react";
+import { BookOpenCheck, Boxes, FileJson2, LayoutDashboard, LogOut, PanelLeft, Plus } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
@@ -13,7 +13,8 @@ import { Button } from "./ui/button";
 const menuItems = [
   { icon: LayoutDashboard, label: "Overview", path: "/", marker: "01" },
   { icon: Boxes, label: "Inventory", path: "/inventory", marker: "02" },
-  { icon: BookOpenCheck, label: "Movement ledger", path: "/movements", marker: "03" },
+  { icon: FileJson2, label: "Intake import", path: "/intake-import", marker: "03" },
+  { icon: BookOpenCheck, label: "Movement ledger", path: "/movements", marker: "04" },
 ];
 const SIDEBAR_WIDTH_KEY = "card-vault-sidebar-width";
 const DEFAULT_WIDTH = 286;

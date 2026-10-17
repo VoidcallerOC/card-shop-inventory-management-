@@ -14,19 +14,29 @@ import {
   stockMovements,
 } from "../../drizzle/schema";
 import {
+  findInventoryMatchCandidates,
+  findStockMovementByReference,
   getDb,
   getInventoryDashboard,
   getInventoryItem,
+  getInventoryItemBySku,
   listInventory,
   listInventoryImages,
   listInventoryLocations,
   listStockAlertHistory,
   listStockMovements,
 } from "../db";
-import { Errors, assertEntityExists, assertVersionMatches } from "../_core/errors";
+import { Errors, assertVersionMatches } from "../_core/errors";
 import { notifyOwner } from "../_core/notification";
 import { protectedProcedure, router } from "../_core/trpc";
 import { planStockAdjustment } from "../inventory/domain";
+import {
+  attachMatchSuggestions,
+  parseAndDraftIntake,
+  validateConfirmBatch,
+  type IntakeConfirmLineInput,
+} from "../inventory/shopIntakeImport";
+import { intakeInventoryConditions, SHOP_INTAKE_SCHEMA } from "@shared/shopIntake";
 import { storagePut } from "../storage";
 import { Config } from "../_core/config";
 
@@ -555,6 +565,379 @@ export const inventoryRouter = router({
           transferGroupId,
         };
       });
+    }),
+
+  /**
+   * Parse a local shop-intake JSON upload into review rows.
+   * Read-only: never creates inventory or ledger rows.
+   */
+  previewShopIntake: protectedProcedure
+    .input(
+      z.object({
+        rawJson: z.string().min(2).max(2_000_000),
+        defaults: z
+          .object({
+            game: z.string().trim().max(80).optional(),
+            setName: z.string().trim().max(160).optional(),
+            storageLocation: z.string().trim().max(160).optional(),
+          })
+          .optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const drafted = parseAndDraftIntake(input.rawJson, input.defaults);
+      if (!drafted.ok) throw Errors.badRequest(drafted.error);
+
+      const enriched = [];
+      for (const line of drafted.lines) {
+        const matches = await findInventoryMatchCandidates({
+          sku: line.sku || null,
+          cardName: line.cardName || null,
+          condition: line.condition,
+        });
+        const [withSuggestions] = attachMatchSuggestions([line], () => matches);
+        const already = await findStockMovementByReference(line.lineId);
+        enriched.push({
+          ...withSuggestions,
+          alreadyApplied: Boolean(already),
+          alreadyMovementId: already?.id ?? null,
+        });
+      }
+
+      return {
+        schema: SHOP_INTAKE_SCHEMA,
+        exportedAt: drafted.payload.exportedAt,
+        client: drafted.payload.client,
+        summary: drafted.payload.summary,
+        lines: enriched,
+        sideEffects: false as const,
+      };
+    }),
+
+  /**
+   * Explicit staff confirm. Creates SKUs and/or receives stock through the same
+   * ledger rules as inventory.create + inventory.adjustStock(receive).
+   * Idempotent per line via stockMovements.reference = intake:{exportedAt}:{key}.
+   */
+  confirmShopIntake: protectedProcedure
+    .input(
+      z.object({
+        exportedAt: z.string().min(1).max(64),
+        lines: z
+          .array(
+            z.object({
+              lineId: z.string().min(1).max(128),
+              sourceKey: z.string().min(1).max(128),
+              included: z.boolean(),
+              matchMode: z.enum(["create", "receive"]),
+              matchedInventoryItemId: z.number().int().positive().nullable(),
+              inventoryLocationId: z.number().int().positive().nullable(),
+              expectedVersion: z.number().int().min(0).nullable(),
+              expectedLocationVersion: z.number().int().min(0).nullable(),
+              productType: z.enum(inventoryProductTypes),
+              game: z.string().trim().min(1).max(80),
+              setName: z.string().trim().min(1).max(160),
+              cardName: z.string().trim().min(1).max(255),
+              collectorNumber: z.string().trim().max(48).nullable(),
+              condition: z.enum(intakeInventoryConditions).nullable(),
+              variant: z.string().trim().max(160).nullable(),
+              sku: z.string().trim().min(2).max(96),
+              purchasePriceCents: z.number().int().min(0),
+              salePriceCents: z.number().int().min(0),
+              quantity: z.number().int().min(1).max(10_000),
+              reorderThreshold: z.number().int().min(0),
+              storageLocation: z.string().trim().min(1).max(160),
+              notes: z.string().trim().max(2_000).nullable(),
+            })
+          )
+          .min(1)
+          .max(500),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const validated = validateConfirmBatch(input.exportedAt, input.lines as IntakeConfirmLineInput[]);
+      if (!validated.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: validated.error,
+          cause: validated.lineErrors,
+        });
+      }
+
+      const db = await getDb();
+      if (!db) throw Errors.serviceUnavailable("Inventory storage is not available.");
+
+      const results: Array<{
+        lineId: string;
+        status: "created" | "received" | "skipped" | "failed";
+        inventoryItemId: number | null;
+        message: string;
+      }> = [];
+
+      for (const line of validated.included) {
+        const existingMovement = await findStockMovementByReference(line.lineId);
+        if (existingMovement) {
+          results.push({
+            lineId: line.lineId,
+            status: "skipped",
+            inventoryItemId: existingMovement.inventoryItemId,
+            message: "Already applied for this intake line (idempotent skip).",
+          });
+          continue;
+        }
+
+        try {
+          if (line.matchMode === "create") {
+            const bySku = await getInventoryItemBySku(line.sku);
+            if (bySku) {
+              results.push({
+                lineId: line.lineId,
+                status: "failed",
+                inventoryItemId: bySku.id,
+                message: `SKU ${line.sku} already exists. Switch this line to receive into the existing record.`,
+              });
+              continue;
+            }
+
+            const created = await db.transaction(async tx => {
+              let insertResult: unknown;
+              try {
+                insertResult = await tx.insert(inventoryItems).values({
+                  productType: line.productType,
+                  game: line.game.trim(),
+                  setName: line.setName.trim(),
+                  cardName: asNullable(line.cardName),
+                  collectorNumber: asNullable(line.collectorNumber),
+                  condition: line.condition!,
+                  variant: asNullable(line.variant),
+                  sku: line.sku.trim(),
+                  purchasePriceCents: line.purchasePriceCents,
+                  salePriceCents: line.salePriceCents,
+                  onHand: 0,
+                  reorderThreshold: line.reorderThreshold,
+                  storageLocation: line.storageLocation.trim(),
+                  notes: asNullable(line.notes),
+                  lowStockNotifiedAt: null,
+                  createdById: ctx.user.id,
+                });
+              } catch {
+                throw Errors.duplicate("SKU", line.sku);
+              }
+
+              const id = getInsertId(insertResult);
+              const locationResult = await tx.insert(inventoryLocations).values({
+                inventoryItemId: id,
+                name: line.storageLocation.trim(),
+                onHand: 0,
+                isPrimary: 1,
+              });
+              const locationId = getInsertId(locationResult);
+
+              const itemPlan = planStockAdjustment({
+                onHand: 0,
+                reorderThreshold: line.reorderThreshold,
+                delta: line.quantity,
+              });
+
+              await tx
+                .update(inventoryItems)
+                .set({
+                  onHand: itemPlan.nextQuantity,
+                  version: 1,
+                  lowStockNotifiedAt: itemPlan.crossesBelowThreshold ? new Date() : null,
+                })
+                .where(eq(inventoryItems.id, id));
+
+              await tx
+                .update(inventoryLocations)
+                .set({ onHand: line.quantity, version: 1 })
+                .where(eq(inventoryLocations.id, locationId));
+
+              const movement = {
+                inventoryItemId: id,
+                movementType: "receive" as const,
+                delta: line.quantity,
+                quantityBefore: 0,
+                quantityAfter: itemPlan.nextQuantity,
+                reason: "Shop intake import receive",
+                reference: line.lineId,
+                createdById: ctx.user.id,
+              };
+              await tx.insert(stockMovements).values(movement);
+              await tx.insert(locationStockMovements).values({
+                ...movement,
+                inventoryLocationId: locationId,
+              });
+
+              if (itemPlan.crossesBelowThreshold) {
+                await writeAlertEvent({
+                  tx,
+                  itemId: id,
+                  eventType: "low_stock",
+                  quantity: itemPlan.nextQuantity,
+                  reorderThreshold: line.reorderThreshold,
+                  reason: "Shop intake opened at or below reorder threshold",
+                  userId: ctx.user.id,
+                });
+              }
+
+              return { id, crossedLow: itemPlan.crossesBelowThreshold, sku: line.sku, cardName: line.cardName };
+            });
+
+            if (created.crossedLow) {
+              await notifyOwner({
+                title: `Low stock: ${created.cardName}`,
+                content: `${created.sku} received ${line.quantity} via shop intake and is at or below its reorder threshold.`,
+              });
+            }
+
+            results.push({
+              lineId: line.lineId,
+              status: "created",
+              inventoryItemId: created.id,
+              message: `Created SKU and received ${line.quantity}.`,
+            });
+            continue;
+          }
+
+          // receive into existing SKU via the same adjustStock ledger rules
+          const itemId = line.matchedInventoryItemId!;
+          const locationId = line.inventoryLocationId;
+          if (!locationId || line.expectedVersion === null || line.expectedLocationVersion === null) {
+            results.push({
+              lineId: line.lineId,
+              status: "failed",
+              inventoryItemId: itemId,
+              message: "Receive requires location id and expected versions from the live record.",
+            });
+            continue;
+          }
+
+          const receiveResult = await db.transaction(async tx => {
+            const [current] = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, itemId)).limit(1);
+            const [location] = await tx
+              .select()
+              .from(inventoryLocations)
+              .where(and(eq(inventoryLocations.id, locationId), eq(inventoryLocations.inventoryItemId, itemId)))
+              .limit(1);
+
+            if (!current) throw Errors.notFound("Inventory record", itemId);
+            if (!location) throw Errors.notFound("Inventory location", locationId);
+
+            assertVersionMatches(current.version, line.expectedVersion!, "Inventory item");
+            assertVersionMatches(location.version, line.expectedLocationVersion!, "Inventory location");
+
+            let itemPlan;
+            let locationPlan;
+            try {
+              itemPlan = planStockAdjustment({
+                onHand: current.onHand,
+                reorderThreshold: current.reorderThreshold,
+                delta: line.quantity,
+              });
+              locationPlan = planStockAdjustment({ onHand: location.onHand, reorderThreshold: 0, delta: line.quantity });
+            } catch (error) {
+              throw Errors.badRequest(error instanceof Error ? error.message : "Invalid stock receive.");
+            }
+
+            const itemWrite = await tx
+              .update(inventoryItems)
+              .set({
+                onHand: itemPlan.nextQuantity,
+                version: current.version + 1,
+                purchasePriceCents: line.purchasePriceCents,
+                salePriceCents: line.salePriceCents,
+                lowStockNotifiedAt: itemPlan.crossesBelowThreshold
+                  ? new Date()
+                  : itemPlan.recoversAboveThreshold
+                    ? null
+                    : current.lowStockNotifiedAt,
+              })
+              .where(and(eq(inventoryItems.id, current.id), eq(inventoryItems.version, line.expectedVersion!)));
+
+            const locationWrite = await tx
+              .update(inventoryLocations)
+              .set({ onHand: locationPlan.nextQuantity, version: location.version + 1 })
+              .where(and(eq(inventoryLocations.id, location.id), eq(inventoryLocations.version, line.expectedLocationVersion!)));
+
+            if (!isSuccessfulWrite(itemWrite) || !isSuccessfulWrite(locationWrite)) {
+              throw Errors.staleVersion("Stock");
+            }
+
+            const movement = {
+              inventoryItemId: current.id,
+              movementType: "receive" as const,
+              delta: line.quantity,
+              quantityBefore: current.onHand,
+              quantityAfter: itemPlan.nextQuantity,
+              reason: "Shop intake import receive",
+              reference: line.lineId,
+              createdById: ctx.user.id,
+            };
+            await tx.insert(stockMovements).values(movement);
+            await tx.insert(locationStockMovements).values({
+              ...movement,
+              inventoryLocationId: location.id,
+              quantityBefore: location.onHand,
+              quantityAfter: locationPlan.nextQuantity,
+            });
+
+            if (itemPlan.crossesBelowThreshold || itemPlan.recoversAboveThreshold) {
+              await writeAlertEvent({
+                tx,
+                itemId: current.id,
+                eventType: itemPlan.crossesBelowThreshold ? "low_stock" : "recovered",
+                quantity: itemPlan.nextQuantity,
+                reorderThreshold: current.reorderThreshold,
+                reason: itemPlan.crossesBelowThreshold
+                  ? "Shop intake receive crossed reorder threshold"
+                  : "Stock level recovered above its reorder threshold",
+                userId: ctx.user.id,
+              });
+            }
+
+            return {
+              item: { ...current, onHand: itemPlan.nextQuantity },
+              crossedLowStock: itemPlan.crossesBelowThreshold,
+            };
+          });
+
+          if (receiveResult.crossedLowStock) {
+            await notifyOwner({
+              title: `Low stock: ${itemLabel(receiveResult.item)}`,
+              content: `${receiveResult.item.sku} reached ${receiveResult.item.onHand} on hand after shop intake receive.`,
+            });
+          }
+
+          results.push({
+            lineId: line.lineId,
+            status: "received",
+            inventoryItemId: itemId,
+            message: `Received ${line.quantity} into existing SKU.`,
+          });
+        } catch (error) {
+          const message =
+            error instanceof TRPCError
+              ? error.message
+              : error instanceof Error
+                ? error.message
+                : "Import line failed.";
+          results.push({
+            lineId: line.lineId,
+            status: "failed",
+            inventoryItemId: line.matchedInventoryItemId,
+            message,
+          });
+        }
+      }
+
+      return {
+        exportedAt: input.exportedAt,
+        results,
+        applied: results.filter(r => r.status === "created" || r.status === "received").length,
+        skipped: results.filter(r => r.status === "skipped").length,
+        failed: results.filter(r => r.status === "failed").length,
+      };
     }),
 
   attachImage: protectedProcedure
